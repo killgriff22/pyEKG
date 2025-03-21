@@ -128,6 +128,7 @@ class MAX30105:
     def __init__(self, i2c: board.I2C, address=0x57):
         self._i2c: board.I2C = i2c
         self._i2caddr = address
+        self._i2c.try_lock()
         self.setup(0x1F, 4, 2, 100, 411, 4096)
         self.sense = {
             'head': 0,  # Array position to insert new data
@@ -137,7 +138,7 @@ class MAX30105:
             'green': [0] * 32,
         }
 
-    def setup(self, powerLevel: int,  sampleAverage: int,  ledMode: int,  sampleRate: int,  pulseWidth: int,  adcRange: int):
+    def setup(self, powerLevel: int=0x1F,  sampleAverage: int=0,  ledMode: int=0,  sampleRate: int=0,  pulseWidth: int=0,  adcRange: int=0):
         self.softReset()  # Reset all configuration, threshold, and data registers to POR values
 
         # FIFO Configuration
@@ -272,11 +273,11 @@ class MAX30105:
 
     def readRegister8(self, address, reg):
         buffer = bytearray(1)
-        self._i2c.writeto(address, bytes([reg]), stop=False)
+        self._i2c.writeto(address, bytes([reg]))
         self._i2c.readfrom_into(address, buffer)
-        board.I2C()
-        if (self._i2c.probe()):
-            return self._i2c.readfrom_into(address, buffer)
+        if (self._i2c.probe(self._i2caddr)):
+            self._i2c.readfrom_into(address, buffer)
+            return buffer[0]
         return (0)  # Fail
 
     def writeRegister8(self, address, reg, value):
@@ -418,135 +419,137 @@ class MAX30105:
 
     def enableAFULL(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_A_FULL_MASK,
-                MAX30105_INT_A_FULL_ENABLE)
+                     MAX30105_INT_A_FULL_ENABLE)
 
     def disableAFULL(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_A_FULL_MASK,
-                MAX30105_INT_A_FULL_DISABLE)
+                     MAX30105_INT_A_FULL_DISABLE)
 
     def enableDATARDY(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_DATA_RDY_MASK,
-                MAX30105_INT_DATA_RDY_ENABLE)
+                     MAX30105_INT_DATA_RDY_ENABLE)
 
     def disableDATARDY(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_DATA_RDY_MASK,
-                MAX30105_INT_DATA_RDY_DISABLE)
+                     MAX30105_INT_DATA_RDY_DISABLE)
 
     def enableALCOVF(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_ALC_OVF_MASK,
-                MAX30105_INT_ALC_OVF_ENABLE)
+                     MAX30105_INT_ALC_OVF_ENABLE)
 
     def disableALCOVF(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_ALC_OVF_MASK,
-                MAX30105_INT_ALC_OVF_DISABLE)
+                     MAX30105_INT_ALC_OVF_DISABLE)
 
     def enablePROXINT(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_PROX_INT_MASK,
-                MAX30105_INT_PROX_INT_ENABLE)
+                     MAX30105_INT_PROX_INT_ENABLE)
 
     def disablePROXINT(self):
         self.bitMask(MAX30105_INTENABLE1, MAX30105_INT_PROX_INT_MASK,
-                MAX30105_INT_PROX_INT_DISABLE)
+                     MAX30105_INT_PROX_INT_DISABLE)
 
     def enableDIETEMPRDY(self):
         self.bitMask(MAX30105_INTENABLE2, MAX30105_INT_DIE_TEMP_RDY_MASK,
-                MAX30105_INT_DIE_TEMP_RDY_ENABLE)
+                     MAX30105_INT_DIE_TEMP_RDY_ENABLE)
 
     def disableDIETEMPRDY(self):
         self.bitMask(MAX30105_INTENABLE2, MAX30105_INT_DIE_TEMP_RDY_MASK,
-                MAX30105_INT_DIE_TEMP_RDY_DISABLE)
+                     MAX30105_INT_DIE_TEMP_RDY_DISABLE)
 
-    #Polls the sensor for new data
-    #Call regularly
-    #If new data is available, it updates the head and tail in the main struct
-    #Returns number of new samples obtained
+    # Polls the sensor for new data
+    # Call regularly
+    # If new data is available, it updates the head and tail in the main struct
+    # Returns number of new samples obtained
     def check(self):
-      #Read register FIDO_DATA in (3-byte * number of active LED) chunks
-      #Until FIFO_RD_PTR = FIFO_WR_PTR
-      I2C_BUFFER_LENGTH = 64
-      readPointer = self.getReadPointer()
-      writePointer = self.getWritePointer()
+        # Read register FIDO_DATA in (3-byte * number of active LED) chunks
+        # Until FIFO_RD_PTR = FIFO_WR_PTR
+        I2C_BUFFER_LENGTH = 64
+        STORAGE_SIZE = 4  # Each long is 4 bytes so limit this to fit on your micro
+        readPointer = self.getReadPointer()
+        writePointer = self.getWritePointer()
 
-      numberOfSamples = 0
+        numberOfSamples = 0
 
-      #Do we have new data?
-      if (readPointer != writePointer):
-        #Calculate the number of readings we need to get from sensor
-        numberOfSamples = writePointer - readPointer
-        if (numberOfSamples < 0): numberOfSamples += 32 #Wrap condition
+        # Do we have new data?
+        if (readPointer != writePointer):
+            # Calculate the number of readings we need to get from sensor
+            numberOfSamples = writePointer - readPointer
+            if (numberOfSamples < 0):
+                numberOfSamples += 32  # Wrap condition
 
-        #We now have the number of readings, now calc bytes to read
-        #For this example we are just doing Red and IR (3 bytes each)
-        bytesLeftToRead = numberOfSamples * self.activeLEDs * 3
+            # We now have the number of readings, now calc bytes to read
+            # For this example we are just doing Red and IR (3 bytes each)
+            bytesLeftToRead = numberOfSamples * self.activeLEDs * 3
 
-        #Get ready to read a burst of data from the FIFO register
-        self._i2c.writeto(self._i2caddr, bytes([MAX30105_FIFODATA]))
+            # Get ready to read a burst of data from the FIFO register
+            self._i2c.writeto(self._i2caddr, bytes([MAX30105_FIFODATA]))
 
-        #We may need to read as many as 288 bytes so we read in blocks no larger than I2C_BUFFER_LENGTH
-        #I2C_BUFFER_LENGTH changes based on the platform. 64 bytes for SAMD21, 32 bytes for Uno.
-        #Wire.requestFrom() is limited to BUFFER_LENGTH which is 32 on the Uno
-        while (bytesLeftToRead > 0):
-          toGet = bytesLeftToRead
-          if (toGet > I2C_BUFFER_LENGTH):
-            #If toGet is 32 this is bad because we read 6 bytes (Red+IR * 3 = 6) at a time
-            #32 % 6 = 2 left over. We don't want to request 32 bytes, we want to request 30.
-            #32 % 9 (Red+IR+GREEN) = 5 left over. We want to request 27.
+            # We may need to read as many as 288 bytes so we read in blocks no larger than I2C_BUFFER_LENGTH
+            # I2C_BUFFER_LENGTH changes based on the platform. 64 bytes for SAMD21, 32 bytes for Uno.
+            # Wire.requestFrom() is limited to BUFFER_LENGTH which is 32 on the Uno
+            while (bytesLeftToRead > 0):
+                toGet = bytesLeftToRead
+                if (toGet > I2C_BUFFER_LENGTH):
+                    # If toGet is 32 this is bad because we read 6 bytes (Red+IR * 3 = 6) at a time
+                    # 32 % 6 = 2 left over. We don't want to request 32 bytes, we want to request 30.
+                    # 32 % 9 (Red+IR+GREEN) = 5 left over. We want to request 27.
 
-            toGet = I2C_BUFFER_LENGTH - (I2C_BUFFER_LENGTH % (self.activeLEDs * 3)) #Trim toGet to be a multiple of the samples we need to read
+                    # Trim toGet to be a multiple of the samples we need to read
+                    toGet = I2C_BUFFER_LENGTH - \
+                        (I2C_BUFFER_LENGTH % (self.activeLEDs * 3))
 
-          bytesLeftToRead -= toGet
-          arr = bytearray(toGet)
-          #Request toGet number of bytes from sensor
-          self._i2c.readfrom_into(self._i2caddr, arr)
+                bytesLeftToRead -= toGet
+                arr = bytearray(toGet)
+                # Request toGet number of bytes from sensor
+                self._i2c.readfrom_into(self._i2caddr, arr)
 
-          while (toGet > 0):
-            self.sense['head']+=1 #Advance the head of the storage struct
-            self.sense['head'] %= STORAGE_SIZE #Wrap condition
+                while (toGet > 0):
+                    # Advance the head of the storage struct
+                    self.sense['head'] += 1
+                    self.sense['head'] %= STORAGE_SIZE  # Wrap condition
 
-            temp = bytearray(4) #Array of 4 bytes that we will convert into long
-            tempLong = 0
+                    # Array of 4 bytes that we will convert into long
+                    temp = bytearray(4)
+                    tempLong = 0
 
-            #Burst read three bytes - RED
-            self._i2c.readfrom_into(self._i2caddr, temp)
-            board.I2C().readfrom_into
-            
-            #Convert array to long
-            memcpy(&tempLong, temp, sizeof(tempLong))
-    
-    		tempLong &= 0x3FFFF #Zero out all but 18 bits
+                    # Burst read three bytes - RED
+                    self._i2c.readfrom_into(self._i2caddr, temp)
 
-            self.sense['red'][self.sense['head']] = tempLong #Store this reading into the sense array
+                    # Convert array to long
+                    tempLong = eval(
+                        '0x' + ''.join('{:02x}'.format(x) for x in temp))
 
-            if (self.activeLEDs > 1):
-              #Burst read three more bytes - IR
-              temp[3] = 0
-              temp[2] = self._i2c->read()
-              temp[1] = self._i2c->read()
-              temp[0] = self._i2c->read()
+                    tempLong &= 0x3FFFF  # Zero out all but 18 bits
 
-              #Convert array to long
-              memcpy(&tempLong, temp, sizeof(tempLong))
+                    # Store this reading into the sense array
+                    self.sense['red'][self.sense['head']] = tempLong
 
-    		  tempLong &= 0x3FFFF #Zero out all but 18 bits
+                    if (self.activeLEDs > 1):
+                        # Burst read three more bytes - IR
+                        self._i2c.readfrom_into(self._i2caddr, temp)
 
-    		  sense.IR[self.sense['head']] = tempLong
+                        # Convert array to long
+                        tempLong = eval(
+                        '0x' + ''.join('{:02x}'.format(x) for x in temp))
 
-            if (self.activeLEDs > 2):
-              #Burst read three more bytes - Green
-              temp[3] = 0
-              temp[2] = self._i2c->read()
-              temp[1] = self._i2c->read()
-              temp[0] = self._i2c->read()
+                        tempLong &= 0x3FFFF  # Zero out all but 18 bits
 
-              #Convert array to long
-              memcpy(&tempLong, temp, sizeof(tempLong))
+                        self.sense['IR'][self.sense['head']] = tempLong
 
-    		  tempLong &= 0x3FFFF #Zero out all but 18 bits
+                    if (self.activeLEDs > 2):
+                        # Burst read three more bytes - Green
+                        self._i2c.readfrom_into(self._i2caddr, temp)
 
-              sense.green[self.sense['head']] = tempLong
+                        # Convert array to long
+                        tempLong = eval(
+                        '0x' + ''.join('{:02x}'.format(x) for x in temp))
 
-            toGet -= self.activeLEDs * 3
+                        tempLong &= 0x3FFFF  # Zero out all but 18 bits
 
+                        self.sense['green'][self.sense['head']] = tempLong
 
+                    toGet -= self.activeLEDs * 3
 
-      return (numberOfSamples) #Let the world know how much new data we found
+        # Let the world know how much new data we found
+        return (numberOfSamples)
